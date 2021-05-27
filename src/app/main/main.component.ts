@@ -1,5 +1,14 @@
 import { Component, OnInit } from '@angular/core';
 import adapter from 'webrtc-adapter';
+import { SignalerService } from '../signaler.service';
+
+class Message {
+  public constructor(
+    public MessageType: number,
+    public Data: string,
+    public IceDataSeparator: string
+  ) { }
+}
 
 @Component({
   selector: 'app-main',
@@ -15,16 +24,72 @@ export class MainComponent implements OnInit {
   private localVideo;
   private remoteVideo;
   private localStream;
-  private pc1;
-  private pc2;
-  readonly offerOptions = {
+  private pc1: RTCPeerConnection;
+  // private pc2;
+  readonly offerOptions = <RTCOfferOptions><any> {
     offerToReceiveAudio: 1,
     offerToReceiveVideo: 1
   };
 
-  constructor() { }
+  private _ws: WebSocket;
 
-  ngOnInit(): void { 
+  constructor(private signaler: SignalerService) {
+  }
+  
+  private setupWebSocket() {
+    this._ws = new WebSocket('ws://localhost/mysvc/rtcsignaller');
+    this._ws.onmessage = async (evt: MessageEvent) => {
+      console.warn('received: ' + evt.data);
+      const data: Message = JSON.parse(evt.data);
+      
+      switch (data.MessageType) {
+        case 1:
+          {
+            let desc: RTCSessionDescriptionInit = {
+              type: 'offer',
+              sdp: data.Data 
+            };
+            try {
+              await this.pc1.setRemoteDescription(desc);
+              this.onSetRemoteSuccess(this.pc1);
+            } catch (e) {
+              this.onSetSessionDescriptionError(e);
+            }
+          } break;
+        case 2:
+          {
+            let desc: RTCSessionDescriptionInit = {
+              type: 'answer',
+              sdp: data.Data 
+            };
+            try {
+              await this.pc1.setRemoteDescription(desc);
+              this.onSetRemoteSuccess(this.pc1);
+            } catch (e) {
+              this.onSetSessionDescriptionError(e);
+            }
+          } break;
+        case 3:
+          {
+            let parts = data.Data.split(data.IceDataSeparator);
+            let candidate = <RTCIceCandidateInit><any> {
+              candidate: parts[0],
+              sdpMid: parts[2],
+              sdpMLineIndex: parts[1]
+            };
+            try {
+              await this.pc1.addIceCandidate(candidate);
+              this.onAddIceCandidateSuccess(this.pc1);
+            } catch (e) {
+              this.onAddIceCandidateError(this.pc1, e);
+            }
+            console.log(` ICE candidate:\n${candidate ? candidate.candidate : '(null)'}`);
+          } break;
+      }
+    };
+  }
+
+  ngOnInit(): void {
     this.startButton = <HTMLInputElement>document.getElementById('startButton');
     this.callButton = <HTMLInputElement>document.getElementById('callButton');
     this.hangupButton = <HTMLInputElement>document.getElementById('hangupButton');
@@ -59,15 +124,16 @@ export class MainComponent implements OnInit {
     }
   }
 
-  getName(pc) {
-    return (pc === this.pc1) ? 'pc1' : 'pc2';
-  }
+  // getName(pc) {
+  //   return (pc === this.pc1) ? 'pc1' : 'pc2';
+  // }
   
-  getOtherPc(pc) {
-    return (pc === this.pc1) ? this.pc2 : this.pc1;
-  }
+  // getOtherPc(pc) {
+  //   return (pc === this.pc1) ? this.pc2 : this.pc1;
+  // }
   
   async start() {
+    this.setupWebSocket();
     console.log('Requesting local stream');
     this.startButton.disabled = true;
     try {
@@ -106,12 +172,12 @@ export class MainComponent implements OnInit {
     this.pc1 = new RTCPeerConnection(configuration);
     console.log('Created local peer connection object pc1');
     this.pc1.addEventListener('icecandidate', e => this.onIceCandidate(this.pc1, e));
-    this.pc2 = new RTCPeerConnection(configuration);
+    // this.pc2 = new RTCPeerConnection(configuration);
     console.log('Created remote peer connection object pc2');
-    this.pc2.addEventListener('icecandidate', e => this.onIceCandidate(this.pc2, e));
+    //this.pc2.addEventListener('icecandidate', e => this.onIceCandidate(this.pc2, e));
     this.pc1.addEventListener('iceconnectionstatechange', e => this.onIceStateChange(this.pc1, e));
-    this.pc2.addEventListener('iceconnectionstatechange', e => this.onIceStateChange(this.pc2, e));
-    this.pc2.addEventListener('track', e => this.gotRemoteStream(this, e));
+    // this.pc2.addEventListener('iceconnectionstatechange', e => this.onIceStateChange(this.pc2, e));
+    // this.pc2.addEventListener('track', e => this.gotRemoteStream(this, e));
   
     this.localStream.getTracks().forEach(track => this.pc1.addTrack(track, this.localStream));
     console.log('Added local stream to pc1');
@@ -129,7 +195,7 @@ export class MainComponent implements OnInit {
     console.log(`Failed to create session description: ${error.toString()}`);
   }
 
-  async onCreateOfferSuccess(desc) {
+  async onCreateOfferSuccess(desc: RTCSessionDescriptionInit) {
     console.log(`Offer from pc1\n${desc.sdp}`);
     console.log('pc1 setLocalDescription start');
     try {
@@ -139,32 +205,38 @@ export class MainComponent implements OnInit {
       this.onSetSessionDescriptionError();
     }
   
+
     console.log('pc2 setRemoteDescription start');
     try {
-      await this.pc2.setRemoteDescription(desc);
-      this.onSetRemoteSuccess(this.pc2);
+      //await this.pc2.setRemoteDescription(desc);
+      
+      let cc = new Message(1, desc.sdp, '|');      
+      this._ws.send(JSON.stringify(cc));
+      //await (this.getOtherPc(pc).addIceCandidate(event.candidate))
+
+      // this.onSetRemoteSuccess(this.pc2);
     } catch (e) {
       this.onSetSessionDescriptionError(e);
     }
   
-    console.log('pc2 createAnswer start');
-    // Since the 'remote' side has no media stream we need
-    // to pass in the right constraints in order for it to
-    // accept the incoming offer of audio and video.
-    try {
-      const answer = await this.pc2.createAnswer();
-      await this.onCreateAnswerSuccess(answer);
-    } catch (e) {
-      this.onCreateSessionDescriptionError(e);
-    }
+    // // console.log('pc2 createAnswer start');
+    // // Since the 'remote' side has no media stream we need
+    // // to pass in the right constraints in order for it to
+    // // accept the incoming offer of audio and video.
+    // try {
+    //   const answer = await this.pc2.createAnswer();
+    //   await this.onCreateAnswerSuccess(answer);
+    // } catch (e) {
+    //   this.onCreateSessionDescriptionError(e);
+    // }
   }
 
   onSetLocalSuccess(pc) {
-    console.log(`${this.getName(pc)} setLocalDescription complete`);
+    console.log(` setLocalDescription complete`);
   }
   
   onSetRemoteSuccess(pc) {
-    console.log(`${this.getName(pc)} setRemoteDescription complete`);
+    console.log(` setRemoteDescription complete`);
   }
   
   onSetSessionDescriptionError(error?) {
@@ -182,8 +254,8 @@ export class MainComponent implements OnInit {
     console.log(`Answer from pc2:\n${desc.sdp}`);
     console.log('pc2 setLocalDescription start');
     try {
-      await this.pc2.setLocalDescription(desc);
-      this.onSetLocalSuccess(this.pc2);
+      //await this.pc2.setLocalDescription(desc);
+      // this.onSetLocalSuccess(this.pc2);
     } catch (e) {
       this.onSetSessionDescriptionError(e);
     }
@@ -196,27 +268,36 @@ export class MainComponent implements OnInit {
     }
   }
   
-  async onIceCandidate(pc, event) {
+  async onIceCandidate(pc, event: RTCPeerConnectionIceEvent) {
     try {
-      await (this.getOtherPc(pc).addIceCandidate(event.candidate));
+      let candidateInfo = event.candidate.toJSON();
+      let SdpMlineIndex = candidateInfo.sdpMLineIndex;
+      let SdpMid = candidateInfo.sdpMid;
+      let Content = candidateInfo.candidate;
+      let cc = new Message(3, `${Content}|${SdpMlineIndex}|${SdpMid}`, '|');      
+      this._ws.send(JSON.stringify(cc));
+      //await (this.getOtherPc(pc).addIceCandidate(event.candidate));
       this.onAddIceCandidateSuccess(pc);
     } catch (e) {
       this.onAddIceCandidateError(pc, e);
     }
-    console.log(`${this.getName(pc)} ICE candidate:\n${event.candidate ? event.candidate.candidate : '(null)'}`);
+    console.log(` ICE candidate:\n${event.candidate ? event.candidate.candidate : '(null)'}`);
+    // console.log(`${this.getName(pc)} ICE candidate:\n${event.candidate ? event.candidate.candidate : '(null)'}`);
   }
   
   onAddIceCandidateSuccess(pc) {
-    console.log(`${this.getName(pc)} addIceCandidate success`);
+    // console.log(`${this.getName(pc)} addIceCandidate success`);
+    console.log(`addIceCandidate success`);
   }
   
   onAddIceCandidateError(pc, error) {
-    console.log(`${this.getName(pc)} failed to add ICE Candidate: ${error.toString()}`);
+    // console.log(`${this.getName(pc)} failed to add ICE Candidate: ${error.toString()}`);
+    console.log(`failed to add ICE Candidate: ${error.toString()}`);
   }
   
   onIceStateChange(pc, event) {
     if (pc) {
-      console.log(`${this.getName(pc)} ICE state: ${pc.iceConnectionState}`);
+      // console.log(`${this.getName(pc)} ICE state: ${pc.iceConnectionState}`);
       console.log('ICE state change event: ', event);
     }
   }
@@ -224,9 +305,9 @@ export class MainComponent implements OnInit {
   hangup() {
     console.log('Ending call');
     this.pc1.close();
-    this.pc2.close();
+    // this.pc2.close();
     this.pc1 = null;
-    this.pc2 = null;
+    //this.pc2 = null;
     this.hangupButton.disabled = true;
     this.callButton.disabled = false;
   }
